@@ -1,0 +1,2 @@
+- chuyển từ exp -> đơn vị khác
+- chỉnh emission theo 

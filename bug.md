@@ -1,0 +1,2 @@
+- NFTVaule in NFTStakeInput
+- Bỏ cái _configurePools
