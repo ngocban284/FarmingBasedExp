@@ -32,7 +32,7 @@ beforeEach(async () => {
 
   // initialize farming contract
   await farmingContract.initialize(
-    100000000000000,
+    1000,
     7 * 60,
     9999,
     nftContract.address,
@@ -545,21 +545,3 @@ beforeEach(async () => {
 //     );
 //   });
 // });
-
-describe("over distribution end time", () => {
-  it("check over distribution end time", async () => {
-    let ids = [...Array(100).keys()].map((i) => i + 1);
-    await farmingContract.connect(user1).stake(ids, 1);
-    await ethers.provider.send("evm_increaseTime", [100000000000000]);
-    await ethers.provider.send("evm_mine");
-
-    // get distribution time end
-    const distributionTimeEnd = await farmingContract.distributionEnd();
-
-    console.log("distribution time end", distributionTimeEnd.toNumber());
-
-    // user reward
-    const reward = await farmingContract.getTotalRewardsBalance([1]);
-    console.log("reward", reward.toNumber());
-  });
-});
