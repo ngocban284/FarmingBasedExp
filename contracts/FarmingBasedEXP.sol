@@ -4,17 +4,18 @@ pragma solidity ^0.8.0;
 import {DistributionManagerNFTs} from "./DistributionManagerNFTs.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721ReceiverUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {INFTCollection} from "./INFTCollection.sol";
-import "hardhat/console.sol";
+import {IStakedToken} from "./IStakedToken.sol";
+import {EmissionFormula} from "./library/EmissionFormula.sol";
 
 contract FarmingBasedEXP is
     OwnableUpgradeable,
     DistributionManagerNFTs,
     IERC721ReceiverUpgradeable
 {
-    using SafeERC20Upgradeable for IERC20Upgradeable;
+    using SafeERC20Upgradeable for IStakedToken;
+    using EmissionFormula for uint256;
 
     /*
     ╔══════════════════════════════╗
@@ -45,9 +46,7 @@ contract FarmingBasedEXP is
     mapping(uint128 => PoolInfo) public poolInfos;
     // totalValues
 
-    address receiveVault;
-    address rewardsVault;
-    IERC20Upgradeable rewardToken;
+    IStakedToken stakingToken;
     INFTCollection nftContract;
     uint256 public cooldownTime;
     uint256 public percentageFee;
@@ -91,28 +90,26 @@ contract FarmingBasedEXP is
         uint256 _cooldownTime,
         uint256 _percentageFee,
         INFTCollection _nftContract,
-        IERC20Upgradeable _rewardToken,
-        address _receiveVault,
-        address _rewardsVault
+        IStakedToken _stakingToken
     ) external initializer {
         require(
             address(_nftContract) != address(0),
             "INVALID ADDRESS: _nftContract"
         );
         require(
-            address(_rewardToken) != address(0),
-            "INVALID ADDRESS: _rewardToken"
+            address(_stakingToken) != address(0),
+            "INVALID ADDRESS: _stakingToken"
         );
-        require(_receiveVault != address(0), "INVALID ADDRESS: _receiveVault");
-        require(_rewardsVault != address(0), "INVALID ADDRESS: _rewardsVault");
         require(_percentageFee <= 10000, "INVALID PERCENTAGE FEE");
         __Ownable_init();
+        IStakedToken(_stakingToken.STAKED_TOKEN()).safeApprove(
+            address(_stakingToken),
+            type(uint256).max
+        );
         nftContract = _nftContract;
-        rewardToken = _rewardToken;
-        receiveVault = _receiveVault;
-        rewardsVault = _rewardsVault;
+        stakingToken = _stakingToken;
         cooldownTime = _cooldownTime;
-        percentageFee = _percentageFee;
+        percentageFee = 10000 - _percentageFee;
         distributionEnd = block.timestamp + _distributionDuration;
     }
 
@@ -139,7 +136,18 @@ contract FarmingBasedEXP is
             "Not in the same length"
         );
         for (uint256 i; i < _level.length; i++) {
-            _configureCoefficient(_level[i], _x[i], _y[i], _z[i], _m[i]);
+            PoolInfo memory poolInfo = poolInfos[_level[i]];
+            uint128 totalValue = poolInfo.totalValue;
+            uint128 nftCount = poolInfo.nftCount;
+            _configureCoefficient(
+                _level[i],
+                _x[i],
+                _y[i],
+                _z[i],
+                _m[i],
+                nftCount,
+                totalValue
+            );
         }
     }
 
@@ -149,12 +157,12 @@ contract FarmingBasedEXP is
 
     function setPercentageFee(uint256 _percentageFee) external onlyOwner {
         require(_percentageFee <= 10000, "INVALID PERCENTAGE FEE");
-        percentageFee = _percentageFee;
+        percentageFee = 10000 - _percentageFee;
     }
 
-    function setRewardToken(IERC20Upgradeable _rewardToken) external onlyOwner {
-        require(address(_rewardToken) != address(0), "INVALID ADDRESS");
-        rewardToken = _rewardToken;
+    function setStakingToken(IStakedToken _stakingToken) external onlyOwner {
+        require(address(_stakingToken) != address(0), "INVALID ADDRESS");
+        stakingToken = _stakingToken;
     }
 
     function increaseDistribution(uint256 distributionDuration)
@@ -164,21 +172,11 @@ contract FarmingBasedEXP is
         distributionEnd = distributionEnd + distributionDuration;
     }
 
-    function setReceiveVault(address _receiveVault) external onlyOwner {
-        require(_receiveVault != address(0), "INVALID ADDRESS");
-        receiveVault = _receiveVault;
-    }
-
-    function setRewardsVault(address _rewardsVault) external onlyOwner {
-        require(address(_rewardsVault) != address(0), "INVALID ADDRESS");
-        rewardsVault = _rewardsVault;
-    }
-
-    function transferAllRewardToken(address _receiver) external onlyOwner {
-        rewardToken.safeTransfer(
-            _receiver,
-            IERC20Upgradeable(rewardToken).balanceOf(address(this))
-        );
+    function transferAllToken(address _receiver, IStakedToken _token)
+        external
+        onlyOwner
+    {
+        _token.safeTransfer(_receiver, _token.balanceOf(address(this)));
     }
 
     /*
@@ -239,7 +237,6 @@ contract FarmingBasedEXP is
         require(msg.sender == tx.origin, "Not a wallet!");
 
         uint256 totalReward;
-        uint256 totalFee;
         uint128 reduceValue;
         PoolInfo memory poolInfo = poolInfos[_level];
         uint128 totalValue = poolInfo.totalValue;
@@ -271,16 +268,14 @@ contract FarmingBasedEXP is
 
             uint128 depositTime = nftInfo.depositTime;
             if (block.timestamp < depositTime + cooldownTime) {
-                uint256 fee = (amountToClaim * percentageFee) / 10000;
-                amountToClaim = amountToClaim - fee;
-                totalFee += fee;
+                amountToClaim = (amountToClaim * percentageFee) / 10000;
             }
 
             totalReward += amountToClaim;
 
             // Add exp to NFT
             uint128 lastPolishTime = nftInfo.lastPolishTime;
-            uint256 expEarn = block.timestamp - lastPolishTime;
+            uint256 expEarn = (block.timestamp - lastPolishTime) / 3;
             nftContract.addCollectionExperience(id, expEarn);
 
             // Transfer back NFT
@@ -288,8 +283,7 @@ contract FarmingBasedEXP is
         }
 
         // Transfer reward token
-        rewardToken.safeTransferFrom(rewardsVault, msg.sender, totalReward);
-        rewardToken.safeTransferFrom(rewardsVault, receiveVault, totalFee);
+        stakingToken.stake(msg.sender, totalReward);
 
         balances[msg.sender][_level] -= _ids.length;
 
@@ -304,8 +298,7 @@ contract FarmingBasedEXP is
         require(msg.sender == tx.origin, "Not a wallet!");
 
         uint256 totalReward;
-        uint256 totalFee;
-        uint128 increaseValue;
+
         PoolInfo memory poolInfo = poolInfos[_level];
         uint128 totalValue = poolInfo.totalValue;
         uint128 nftCount = poolInfo.nftCount;
@@ -334,35 +327,13 @@ contract FarmingBasedEXP is
 
             uint128 depositTime = nftInfo.depositTime;
             if (block.timestamp < depositTime + cooldownTime) {
-                uint256 fee = (amountToClaim * percentageFee) / 10000;
-                amountToClaim = amountToClaim - fee;
-                totalFee += fee;
+                amountToClaim = (amountToClaim * percentageFee) / 10000;
             }
-
             totalReward += amountToClaim;
-
-            // Increase exp and update nft info(value and depositTime)
-            // Add exp to NFT
-            uint128 lastPolishTime = nftInfo.lastPolishTime;
-            uint256 expEarn = block.timestamp - lastPolishTime;
-            nftContract.addCollectionExperience(id, expEarn);
-
-            uint256 newNFTExp = nftContract.getCollectionExperience(id);
-            uint128 newValue = _caculateValue(newNFTExp);
-            increaseValue += (newValue - nftInfo.value);
-            nftInfo.value = newValue;
-            nftInfo.lastPolishTime = uint128(block.timestamp);
-
-            nftInfos[id] = nftInfo;
         }
 
         // Transfer reward token
-        rewardToken.safeTransferFrom(rewardsVault, msg.sender, totalReward);
-        rewardToken.safeTransferFrom(rewardsVault, receiveVault, totalFee);
-
-        // increase value
-        poolInfo.totalValue += increaseValue;
-        poolInfos[_level] = poolInfo;
+        stakingToken.stake(msg.sender, totalReward);
 
         emit ClaimReward(msg.sender, _ids, _level, totalReward);
     }
@@ -394,7 +365,7 @@ contract FarmingBasedEXP is
             // Increase exp and update nft info(value and depositTime)
             // Add exp to NFT
             uint128 lastPolishTime = nftInfo.lastPolishTime;
-            uint256 expEarn = block.timestamp - lastPolishTime;
+            uint256 expEarn = (block.timestamp - lastPolishTime) / 3;
             nftContract.addCollectionExperience(id, expEarn);
 
             uint256 newNFTExp = nftContract.getCollectionExperience(id);
@@ -423,7 +394,7 @@ contract FarmingBasedEXP is
     */
 
     function getTotalRewardsBalance(uint256[] calldata _ids)
-        public
+        external
         view
         returns (uint256)
     {
@@ -453,9 +424,7 @@ contract FarmingBasedEXP is
             amountToClaim += nftRewardsToClaim[id];
 
             if (block.timestamp < depositTime + cooldownTime) {
-                uint256 fee = (amountToClaim * percentageFee) / 10000;
-            
-                amountToClaim = amountToClaim - fee;
+                amountToClaim = amountToClaim * percentageFee;
             }
             totalReward += amountToClaim;
         }
@@ -481,9 +450,7 @@ contract FarmingBasedEXP is
         NFTInfo memory nftInfo = nftInfos[_id];
 
         uint256 lastPolishTime = nftInfo.lastPolishTime;
-        uint256 expEarned = block.timestamp - lastPolishTime;
-        
-        // should be descrease 100
+        uint256 expEarned = (block.timestamp - lastPolishTime) / 3;
         uint128 valueEarned = _caculateValue(expEarned);
         return (expEarned, valueEarned);
     }
@@ -521,7 +488,7 @@ contract FarmingBasedEXP is
     */
 
     function _caculateValue(uint256 exp) internal pure returns (uint128) {
-        return uint128(exp / 100000 + 100);
+        return uint128(exp / 86400 + 100);
     }
 
     function onERC721Received(

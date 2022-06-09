@@ -1,7 +1,6 @@
 pragma solidity ^0.8.0;
 
 import {EmissionFormula} from "./library/EmissionFormula.sol";
-import "hardhat/console.sol";
 
 contract DistributionManagerNFTs {
     using EmissionFormula for uint256;
@@ -49,6 +48,7 @@ contract DistributionManagerNFTs {
         EmissionParameter memory tempEmissionParameter = emissionParameters[
             _poolNumber
         ];
+        if (tempEmissionParameter.coefficientM == 0) return 0;
         return
             uint256(_nftCount).getEmissionPerSecond(
                 uint256(tempEmissionParameter.coefficientX),
@@ -63,8 +63,17 @@ contract DistributionManagerNFTs {
         uint64 _x,
         uint64 _y,
         uint64 _z,
-        uint64 _m
+        uint64 _m,
+        uint128 _nftCount,
+        uint128 _totalValue
     ) internal {
+        PoolData storage poolConfig = pools[_poolNumber];
+        _updatePoolStateInternal(
+            _poolNumber,
+            poolConfig,
+            _nftCount,
+            _totalValue
+        );
         EmissionParameter memory tempEmissionParameter = emissionParameters[
             _poolNumber
         ];
@@ -177,7 +186,6 @@ contract DistributionManagerNFTs {
             poolConfig.lastUpdateTimestamp,
             stake.totalValue
         );
-
 
         accruedRewards = _getRewards(
             stake.nftValue,
