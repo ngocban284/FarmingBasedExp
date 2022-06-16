@@ -47,7 +47,7 @@ $ npx hardhat test /test/testCase.test.js
 ### ADMIN FEATURES
 
 - setCoefficient : Initialize emission per seconds for each pool (rewards start to be calculated after users stake)
-- setCooldownTime : The countdown time that the user has to wait. If the bonus is withdrawn before the cooldown time over, a fee will be deducted from reward of the user.
+- setCooldownTime : The cooldown time that the user has to wait. If the bonus is withdrawn before the cooldown time over, a fee will be deducted from reward of the user.
 - increaseDistribution : increase bonus withdrawal expiration time
 - setStakingToken : Set the contract address that will pay the token reward to the user
 - setPercentageFee : Set fee that users have to pay when withdrawing money before cooldown time
