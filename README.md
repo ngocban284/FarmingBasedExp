@@ -28,6 +28,12 @@ $ git clone https://github.com/ngocban284/FarmingBasedExp.git
 $ npm i
 ```
 
+### Compile smart contract
+
+```bash
+$ npx hardhat compile
+```
+
 ### Run hardhat script test
 
 ```bash
